@@ -1,0 +1,306 @@
+---
+title: "Group Application_6"
+author: "Coco Choo"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(simmer)
+data <- read.csv("C:\\Coco\\TTU\\Spring 2025\\Spring I\\Simulation & Optimization\\Group Application\\Case6_emergency-room.csv")
+```
+
+```{r}
+InterArrival = data$interArrival
+
+# Data is discrete
+# Visualize data
+hist(InterArrival, main="Count of Inter Arrivals")
+# The data distribution is right skewed and unimodal
+
+# Time Series Plot
+plot(InterArrival, type="b", main="Count of Inter Arrivals", ylab = "Count")
+# There is no noticeable trend in the time-series plot
+
+# Autocorrelation Plot
+acf(InterArrival)
+# The autocorrelation plot shows no significant correlation for the observation number (all lags are well within the confidence band except for one instance, without following a pattern). Therefore, the data appears to be stationary (IID). 
+```
+
+```{r}
+# Hypothesizing distributions
+library(fitdistrplus)
+descdist(InterArrival, discrete = TRUE)
+
+# We first evaluate Negative Binomial
+fit.nbinom = fitdist(InterArrival, "nbinom")
+summary(fit.nbinom)
+
+# Then, we evaluate Poisson
+fit.pois = fitdist(InterArrival, "pois")
+summary(fit.pois)
+# nbinom has bigger loglikelihood value. Based on AIC and BIC, negative binomial is better
+```
+
+```{r}
+# Applying goodness-of-fit on Negative Binomial
+gofstat(fit.nbinom)
+
+# H0: Data is distributed by Negative Binomial distribution
+# Test is rejected. p-value < 0.05
+# We can conclude that data is NOT distributed by Negative Binomial distribution. Therefore, it is better to try to fit continuous distributions
+```
+
+```{r}
+# If we assume data is continuous
+descdist(InterArrival, discrete = FALSE)
+
+# Gamma
+fit.gamma <- fitdist(InterArrival, "gamma")
+summary(fit.gamma)
+
+# Weibull
+fit.weibull <- fitdist(InterArrival, "weibull")
+summary(fit.weibull)
+
+# Normal
+fit.norm <- fitdist(InterArrival, "norm")
+summary(fit.norm)
+# Gamma and Weibull have the best likelihood and AIC & BIC
+
+# Plot
+plot(fit.gamma)
+plot(fit.weibull)
+# Will check Gamma distribution
+```
+
+```{r}
+# Goodness of fit on Gamma distribution
+g <- gofstat(fit.gamma)
+g$chisqpvalue
+
+# H0: Data is distributed by Gamma distribution
+# Test is NOT rejected because p-value > 0.05
+# InterArrival is distributed by Gamma distribution
+```
+
+```{r}
+summary(fit.gamma)
+# shape = 0.9638
+# rate = 0.0639
+```
+
+```{r}
+# Calculate probability distribution of each type
+count <- table(data$type)
+prop.table(count)
+## CW = 0.82
+## NIA = 0.18
+```
+
+```{r}
+patient <- trajectory("patients' path") %>%
+
+ branch(option = function() sample(1:2, 1, prob = c(0.82, 0.18), replace=T), continue = c(T,T),
+
+  # Set up a trajectory for NIA patients
+  trajectory("NIA Patient") %>%
+  ## Highest Priority: 3
+  set_attribute("priority", 3) %>%
+  set_prioritization(c(5, 7, T)) %>%
+  seize("doctor", 1) %>%
+  timeout(function() runif(1, 10, 70)) %>%
+  release("doctor", 1) %>%
+  
+  ## Mid Priority: 2
+  set_attribute("priority", 2) %>%
+  set_prioritization(c(4, 7, T)) %>%
+  seize("doctor", 1) %>%
+  timeout(function() runif(1, 10, 50)) %>%
+  release("doctor", 1),
+
+  # Set up a trajectory for CW patients
+  trajectory("CW Patient") %>%
+  ## Lowest Priority: 1
+  set_attribute("priority", 1) %>%
+  set_prioritization(c(2, 7, T)) %>%
+  seize("doctor", 1) %>%
+  timeout(function() runif(1, 5, 25)) %>%
+  release("doctor", 1) %>%
+  
+  ## Mid Priority: 2
+  set_attribute("priority", 2) %>%
+  set_prioritization(c(4, 7, T)) %>%
+  seize("doctor", 1) %>%
+  timeout(function() runif(1, 5, 15)) %>%
+  release("doctor", 1)
+ )
+
+set.seed(123)
+envs <- lapply(1:20, function(i) {
+ env <- simmer("Emergency Room") 
+ env %>%
+ add_resource("doctor", 2) %>%
+ add_generator("patient", patient, function() rgamma(1, shape = 0.9638, rate = 0.0639), mon = 2) %>%
+ run(24*60)
+})
+```
+
+```{r}
+x1 <- get_mon_arrivals(envs)
+x2 <- get_mon_attributes(envs)
+
+all <- merge(x1, x2, by= c("name", "replication"), all= T)
+head(all)
+
+priority1 <- na.omit(subset(all, all$value ==1 ))
+priority3 <- na.omit(subset(all, all$value ==3))
+
+# Compare average waiting time between NIA and CW patients
+priority1.waiting <- (priority1$end_time - priority1$start_time) - priority1$activity_time
+
+priority3.waiting <- (priority3$end_time - priority3$start_time) - priority3$activity_time
+
+# Average waiting time for CW patients
+mean(priority1.waiting)
+## Before suggestion: 12.1 minutes
+
+# Average waiting time for NIA patients
+mean(priority3.waiting)
+## Before suggestion: 292 minutes
+
+# Average waiting time per replication for each type
+priority1.waiting.rep <- aggregate(priority1.waiting, by = list(priority1$replication), mean)
+
+priority3.waiting.rep <- aggregate(priority3.waiting, by = list(priority3$replication), mean)
+
+boxplot(priority1.waiting.rep$x, priority3.waiting.rep$x, names = c("CW", "NIA"), main = "Waiting Time per Replication")
+```
+
+```{r}
+# Average flow time of each type of patient (BEFORE suggestion)
+priority1.flowtime = (priority1$end_time-priority1$start_time)
+
+priority3.flowtime = (priority3$end_time-priority3$start_time)
+
+# Average flow time of CW Patient
+mean(priority1.flowtime, na.rm = T)
+## [1] 35
+
+# Average flow time of NIA Patient
+mean(priority3.flowtime, na.rm = T)
+## [1] 357
+```
+
+```{r}
+# Utilization of doctors BEFORE suggestion
+library(simmer.plot)
+options(digits = 3)
+resources <- get_mon_resources(envs)
+plot(resources, metric = "utilization")
+```
+
+```{r}
+patient <- trajectory("patients' path") %>%
+
+ branch(option = function() sample(1:2, 1, prob = c(0.82, 0.18), replace=T), continue = c(T,T),
+
+  # Set up a trajectory for NIA patients
+  trajectory("NIA Patient") %>%
+  ## Highest Priority: 3
+  set_attribute("priority", 3) %>%
+  set_prioritization(c(5, 7, T)) %>%
+  seize("doctor", 1) %>%
+  timeout(function() runif(1, 10, 70)) %>%
+  release("doctor", 1) %>%
+  
+  ## Mid Priority: 2
+  set_attribute("priority", 2) %>%
+  set_prioritization(c(4, 7, T)) %>%
+  seize("doctor", 1) %>%
+  timeout(function() runif(1, 10, 50)) %>%
+  release("doctor", 1),
+
+  # Set up a trajectory for CW patients
+  trajectory("CW Patient") %>%
+  ## Lowest Priority: 1
+  set_attribute("priority", 1) %>%
+  set_prioritization(c(2, 7, T)) %>%
+  seize("doctor", 1) %>%
+  timeout(function() runif(1, 5, 25)) %>%
+  release("doctor", 1) %>%
+  
+  ## Mid Priority: 2
+  set_attribute("priority", 2) %>%
+  set_prioritization(c(4, 7, T)) %>%
+  seize("doctor", 1) %>%
+  timeout(function() runif(1, 5, 15)) %>%
+  release("doctor", 1)
+ )
+
+set.seed(123)
+envs <- lapply(1:20, function(i) {
+ env <- simmer("Emergency Room") 
+ env %>%
+ add_resource("doctor", 7) %>%
+ add_generator("patient", patient, function() rgamma(1, shape = 0.9638, rate = 0.0639), mon = 2) %>%
+ run(24*60)
+})
+```
+
+```{r}
+x1 <- get_mon_arrivals(envs)
+x2 <- get_mon_attributes(envs)
+
+all <- merge(x1, x2, by= c("name", "replication"), all= T)
+head(all)
+
+priority1 <- na.omit(subset(all, all$value ==1 ))
+priority3 <- na.omit(subset(all, all$value ==3))
+
+# Compare average waiting time between NIA and CW patients
+priority1.waiting <- (priority1$end_time - priority1$start_time) - priority1$activity_time
+
+priority3.waiting <- (priority3$end_time - priority3$start_time) - priority3$activity_time
+
+# Average waiting time for CW patients
+mean(priority1.waiting)
+## After suggestion (Add more doctors: 7): 4.03 minutes
+
+# Average waiting time for NIA patients
+mean(priority3.waiting)
+## After suggestion (Add more doctors: 7): 2.28 minutes
+
+# Average waiting time per replication for each type
+priority1.waiting.rep <- aggregate(priority1.waiting, by = list(priority1$replication), mean)
+
+priority3.waiting.rep <- aggregate(priority3.waiting, by = list(priority3$replication), mean)
+
+boxplot(priority1.waiting.rep$x, priority3.waiting.rep$x, names = c("CW", "NIA"), main = "Waiting Time per Replication")
+```
+
+```{r}
+# Average flow time of each type of patient (AFTER suggestion)
+priority1.flowtime = (priority1$end_time-priority1$start_time)
+
+priority3.flowtime = (priority3$end_time-priority3$start_time)
+
+# Average flow time of CW Patient
+mean(priority1.flowtime, na.rm = T)
+## [1] 29.2
+
+# Average flow time of NIA Patient
+mean(priority3.flowtime, na.rm = T)
+## [1] 72.1
+```
+
+```{r}
+# Utilization of doctors AFTER suggestion
+resources <- get_mon_resources(envs)
+plot(resources, metric = "utilization")
+```
+
